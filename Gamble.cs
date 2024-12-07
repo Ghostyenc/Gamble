@@ -5,7 +5,7 @@
          \____/_/ /_/\____/____/\__/\__, /
                                    /____/
 
-This plugin is exclusively licensed to Enchanted.gg and may not be distributed or used on other servers without explicit permission.
+This plugin is exclusively licensed to Enchanted.gg and may not be edited or sold without explicit permission.
 
 © 2024 Ghosty & Enchanted.gg
 */
