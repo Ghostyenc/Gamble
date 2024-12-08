@@ -37,7 +37,7 @@ namespace Oxide.Plugins
             public string CurrencyShortName { get; set; } = "scrap";
             public bool BroadcastToAll { get; set; } = true;
             public string BroadcastPrefix { get; set; } = "<size=16>[ Gamble <size=9>By Ghosty</size> ]</size>\n\n• ";
-            public float AutoStartInterval { get; set; } = 1800f;
+            public float AutoStartInterval { get; set; } = 3600f;
         }
 
         protected override void LoadDefaultConfig()
