@@ -5,39 +5,39 @@
          \____/_/ /_/\____/____/\__/\__, /
                                    /____/
 
-This plugin is exclusively licensed to Enchanted.gg and may not be edited or sold without explicit permission.
+This plugin is exclusively licensed to Enchanted.gg and may not be distributed or used on other servers without explicit permission.
 
-© 2024 Ghosty & Enchanted.gg
+© 2025 Ghosty & Enchanted.gg
 */
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using Oxide.Core;
-using Oxide.Core.Plugins;
 using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Gamble", "Ghosty", "1.1.0")]
+    [Info("Gamble", "Ghosty", "2.0.0")]
     public class Gamble : RustPlugin
     {
         private ConfigData _config;
-        private bool _roundInProgress = false;
-        private Dictionary<string, int> _participants = new Dictionary<string, int>();
-        private List<string> _participantOrder = new List<string>();
-        private Timer _countdownTimer = null;
-        private Timer _autoStartTimer = null;
+        private bool _roundInProgress;
+        private readonly Dictionary<string, int> _participants = new Dictionary<string, int>();
+        private readonly List<string> _participantOrder = new List<string>();
+        private Timer _countdownTimer;
+        private Timer _autoStartTimer;
         private System.Random _random = new System.Random();
         private float _timeLeft;
 
+        #region Config
         private class ConfigData
         {
             public float CountdownTime { get; set; } = 600f;
             public string CurrencyShortName { get; set; } = "scrap";
             public bool BroadcastToAll { get; set; } = true;
-            public string BroadcastPrefix { get; set; } = "<size=16>[ Gamble <size=9>By Ghosty</size> ]</size>\n\n• ";
-            public float AutoStartInterval { get; set; } = 3600f;
+            public string BroadcastPrefix { get; set; } = "<color=#dbb403><b>[Gamble]</b></color> ";
+            public float AutoStartInterval { get; set; } = 1800f;
         }
 
         protected override void LoadDefaultConfig()
@@ -64,84 +64,132 @@ namespace Oxide.Plugins
 
         protected override void SaveConfig() => SaveConfig(_config);
         private void SaveConfig(ConfigData config) => Config.WriteObject(config);
+        #endregion
 
-        private void OnServerInitialized()
+        void OnServerInitialized()
         {
             _roundInProgress = false;
             _participants.Clear();
             _participantOrder.Clear();
-            if (_countdownTimer != null && !_countdownTimer.Destroyed) _countdownTimer.Destroy();
-            if (_autoStartTimer != null && !_autoStartTimer.Destroyed) _autoStartTimer.Destroy();
+            _countdownTimer?.Destroy();
+            _autoStartTimer?.Destroy();
             _autoStartTimer = timer.Every(_config.AutoStartInterval, CheckAndStartRoundAutomatically);
         }
 
         [ChatCommand("gamble")]
         private void GambleCommand(BasePlayer player, string command, string[] args)
         {
+            if (!_roundInProgress)
+            {
+                SendReply(player, Prefix() + "No gamble round is running! Wait for the next round to open.");
+                return;
+            }
+
             if (args.Length < 1)
             {
-                SendReply(player, $"{_config.BroadcastPrefix} Usage: /gamble <amount>");
+                SendReply(player, Prefix() + "Usage: <color=#ffb400>/gamble <scrap amount></color>");
                 return;
             }
 
             if (!int.TryParse(args[0], out int amount) || amount <= 0)
             {
-                SendReply(player, $"{_config.BroadcastPrefix} Please enter a valid positive amount of scrap.");
+                SendReply(player, Prefix() + "Please enter a valid positive amount.");
                 return;
             }
 
-            var definition = ItemManager.FindItemDefinition(_config.CurrencyShortName);
-            if (definition == null)
+            if (_participants.ContainsKey(player.UserIDString))
             {
-                SendReply(player, $"{_config.BroadcastPrefix} Invalid currency configured.");
+                SendReply(player, Prefix() + "You've already entered this round! Wait for the next round to try again.");
                 return;
             }
 
-            int playerScrap = (int)player.inventory.GetAmount(definition.itemid);
+            var def = ItemManager.FindItemDefinition(_config.CurrencyShortName);
+            if (def == null)
+            {
+                SendReply(player, Prefix() + "Internal error: configured currency not found.");
+                return;
+            }
+
+            int playerScrap = (int)player.inventory.GetAmount(def.itemid);
             if (playerScrap < amount)
             {
-                SendReply(player, $"{_config.BroadcastPrefix} You do not have enough {_config.CurrencyShortName} to join the gamble.");
+                SendReply(player, Prefix() + $"You don't have enough <color=#dbb403>{_config.CurrencyShortName}</color>.");
                 return;
             }
 
             int removed = RemoveItems(player, _config.CurrencyShortName, amount);
             if (removed < amount)
             {
-                SendReply(player, $"{_config.BroadcastPrefix} Failed to remove required scrap from your inventory. Please try again.");
+                SendReply(player, Prefix() + $"Failed to remove required {_config.CurrencyShortName}.");
                 return;
             }
 
             AddParticipant(player.UserIDString, amount);
-            int totalPot = GetTotalPot();
-            float playerChance = ((float)_participants[player.UserIDString] / (float)totalPot) * 100f;
-            SendReply(player, $"{_config.BroadcastPrefix} You have entered the gamble with {amount} scrap. Your current chance of winning: {playerChance:0.00}%");
 
-            if (!_roundInProgress) StartCountdown();
+            float playerChance = 100f * amount / GetTotalPot();
+            SendReply(player, Prefix() + $"You entered with <color=#dbb403>{amount} {def.displayName.translated}</color> | Your odds: <color=#5cb85c>{playerChance:0.0}%</color>.");
+
+            BroadcastToAll(Prefix() + $"<color=#b6e2ff>{player.displayName}</color> joined the gamble. ({_participants.Count} participants, pot: <color=#dbb403>{GetTotalPot()} {def.displayName.translated}</color>)\nUse /pot to check the current pot.");
+        }
+
+        [ChatCommand("pot")]
+        private void PotCommand(BasePlayer player, string command, string[] args)
+        {
+            if (!_roundInProgress)
+            {
+                SendReply(player, Prefix() + "No round is running currently.");
+                return;
+            }
+
+            var def = ItemManager.FindItemDefinition(_config.CurrencyShortName);
+            int pot = GetTotalPot();
+            string msg = $"{Prefix()}<color=#dbb403>POT:</color> <color=#dbb403>{pot} {def.displayName.translated}</color> | <color=#b6e2ff>{_participants.Count}</color> participants";
+            if (_participants.ContainsKey(player.UserIDString))
+            {
+                int you = _participants[player.UserIDString];
+                float odds = 100f * you / pot;
+                msg += $" | <color=#5cb85c>Your odds: {odds:0.0}%</color>";
+            }
+            if (_timeLeft > 0)
+                msg += $" | <color=#ababab>Time left: {FormatTime(_timeLeft)}</color>";
+            SendReply(player, msg);
+        }
+
+        [ChatCommand("startgamble")]
+        private void StartGambleCommand(BasePlayer player, string command, string[] args)
+        {
+            if (player != null && player.net?.connection != null && player.net.connection.authLevel < 1)
+            {
+                SendReply(player, Prefix() + "You don't have permission to use this command.");
+                return;
+            }
+
+            if (_roundInProgress)
+            {
+                SendReply(player, Prefix() + "A gamble round is already running!");
+                return;
+            }
+            StartCountdown();
+            BroadcastToAll(Prefix() + $"<color=#e3ffb6>Admin started a new gamble round!</color> Use <color=#ffb400>/gamble <scrap amount></color> to join.");
         }
 
         private void CheckAndStartRoundAutomatically()
         {
-            if (!_roundInProgress) StartCountdown();
+            if (!_roundInProgress)
+                StartCountdown();
         }
 
         private void AddParticipant(string playerId, int amount)
         {
-            if (!_participants.ContainsKey(playerId))
-            {
-                _participants[playerId] = amount;
-                _participantOrder.Add(playerId);
-            }
-            else
-            {
-                _participants[playerId] += amount;
-            }
+            _participants[playerId] = amount;
+            _participantOrder.Add(playerId);
         }
 
         private void StartCountdown()
         {
             _roundInProgress = true;
             _timeLeft = _config.CountdownTime;
-            BroadcastMessage($"A new gambling round has started! Use /gamble <amount> to join. Winner will be chosen in {FormatTime(_config.CountdownTime)}.");
+            BroadcastToAll(Prefix() + $"<color=#fff6b0>Gamble round started!</color> Use <color=#ffb400>/gamble <scrap amount></color> to enter. Winner in <color=#5cb85c>{FormatTime(_config.CountdownTime)}</color>.");
             _countdownTimer = timer.Every(1f, OnCountdownTick);
         }
 
@@ -155,18 +203,9 @@ namespace Oxide.Plugins
                 return;
             }
 
-            if (_timeLeft > 60 && (_timeLeft % 60 == 0))
+            if (_timeLeft == 60 || _timeLeft == 30 || _timeLeft == 10 || (_timeLeft <= 5 && _timeLeft > 0))
             {
-                int minutesLeft = Mathf.FloorToInt(_timeLeft / 60f);
-                BroadcastMessage($"Gamble ends in {minutesLeft} {(minutesLeft > 1 ? "minutes" : "minute")}! Use /gamble <amount> to join!");
-            }
-            else if (_timeLeft <= 60 && _timeLeft > 10 && (_timeLeft % 10 == 0))
-            {
-                BroadcastMessage($"Gamble ends in {_timeLeft} seconds! Use /gamble <amount> to join!");
-            }
-            else if (_timeLeft <= 10)
-            {
-                BroadcastMessage($"Gamble ends in {_timeLeft} {( _timeLeft == 1 ? "second" : "seconds")}! Use /gamble <amount> to join!");
+                BroadcastToAll(Prefix() + $"Gamble ends in <color=#dbb403>{(int)_timeLeft}</color> seconds! Use <color=#ffb400>/gamble <scrap amount></color> to join!");
             }
         }
 
@@ -175,24 +214,26 @@ namespace Oxide.Plugins
             if (_participants.Count == 0)
             {
                 _roundInProgress = false;
-                BroadcastMessage("No participants joined the gamble. No winner this round.");
+                BroadcastToAll(Prefix() + "<color=#ff9f9f>No one joined. No winner this round.</color>");
                 return;
             }
 
-            string winnerId = _participantOrder[_random.Next(_participantOrder.Count)];
+            string winnerId = PickWinner();
             int totalPot = GetTotalPot();
             int winnerAmount = _participants[winnerId];
-            float winnerChance = ((float)winnerAmount / (float)totalPot) * 100f;
+            float winnerChance = 100f * winnerAmount / totalPot;
+            var winnerPlayer = BasePlayer.FindByID(Convert.ToUInt64(winnerId));
+            var def = ItemManager.FindItemDefinition(_config.CurrencyShortName);
 
-            var winnerBasePlayer = BasePlayer.FindByID(Convert.ToUInt64(winnerId));
-            if (winnerBasePlayer != null && winnerBasePlayer.IsConnected && winnerBasePlayer.inventory != null)
+            if (winnerPlayer != null && winnerPlayer.IsConnected && winnerPlayer.inventory != null)
             {
-                GiveItems(winnerBasePlayer, _config.CurrencyShortName, totalPot);
-                BroadcastMessage($"The winner of the gamble is {winnerBasePlayer.displayName}, winning {totalPot} scrap! They had a {winnerChance:0.00}% chance to win.");
+                GiveItems(winnerPlayer, _config.CurrencyShortName, totalPot);
+                BroadcastToAll(Prefix() +
+                    $"<color=#b6e2ff>{winnerPlayer.displayName}</color> wins <color=#dbb403>{totalPot} {def.displayName.translated}</color> with <color=#5cb85c>{winnerChance:0.0}%</color> odds! 🎉");
             }
             else
             {
-                BroadcastMessage($"The winner (ID: {winnerId}) is offline. Winnings could not be delivered. They had a {winnerChance:0.00}% chance to win.");
+                BroadcastToAll(Prefix() + $"The winner (ID: {winnerId}) is offline and did not receive the winnings. Their odds: {winnerChance:0.0}%.");
             }
 
             _roundInProgress = false;
@@ -200,35 +241,40 @@ namespace Oxide.Plugins
             _participantOrder.Clear();
         }
 
-        private int GetTotalPot()
+        private string PickWinner()
         {
-            int total = 0;
-            foreach (var amt in _participants.Values) total += amt;
-            return total;
+            int totalPot = GetTotalPot();
+            int roll = _random.Next(1, totalPot + 1);
+            int sum = 0;
+            foreach (var entry in _participantOrder)
+            {
+                sum += _participants[entry];
+                if (roll <= sum)
+                    return entry;
+            }
+            return _participantOrder[_random.Next(_participantOrder.Count)];
         }
 
-        private void BroadcastMessage(string message)
+        private int GetTotalPot() => _participants.Values.Sum();
+
+        private void BroadcastToAll(string message)
         {
             if (_config.BroadcastToAll)
-            {
-                PrintToChat($"{_config.BroadcastPrefix} {message}");
-            }
+                PrintToChat(message);
             else
-            {
                 Puts(message);
-            }
         }
+
+        private string Prefix() => _config.BroadcastPrefix;
 
         private int RemoveItems(BasePlayer player, string shortname, int amount)
         {
-            var definition = ItemManager.FindItemDefinition(shortname);
-            if (definition == null || player?.inventory == null) return 0;
-
+            var def = ItemManager.FindItemDefinition(shortname);
+            if (def == null || player?.inventory == null) return 0;
             int removed = 0;
-            removed += TakeFromContainer(player.inventory.containerMain, definition.itemid, amount - removed);
-            if (removed < amount) removed += TakeFromContainer(player.inventory.containerBelt, definition.itemid, amount - removed);
-            if (removed < amount) removed += TakeFromContainer(player.inventory.containerWear, definition.itemid, amount - removed);
-
+            removed += TakeFromContainer(player.inventory.containerMain, def.itemid, amount - removed);
+            if (removed < amount) removed += TakeFromContainer(player.inventory.containerBelt, def.itemid, amount - removed);
+            if (removed < amount) removed += TakeFromContainer(player.inventory.containerWear, def.itemid, amount - removed);
             player.SendNetworkUpdate();
             return removed;
         }
@@ -237,7 +283,6 @@ namespace Oxide.Plugins
         {
             int removed = 0;
             if (container == null || amount <= 0) return 0;
-
             foreach (var item in container.itemList.ToArray())
             {
                 if (item.info.itemid == itemId)
@@ -250,38 +295,26 @@ namespace Oxide.Plugins
                     if (removed >= amount) break;
                 }
             }
-
             return removed;
         }
 
         private void GiveItems(BasePlayer player, string shortname, int amount)
         {
-            var definition = ItemManager.FindItemDefinition(shortname);
-            if (definition == null) return;
-            var item = ItemManager.Create(definition, amount);
+            var def = ItemManager.FindItemDefinition(shortname);
+            if (def == null) return;
+            var item = ItemManager.Create(def, amount);
             if (!item.MoveToContainer(player.inventory.containerMain))
-            {
                 if (!item.MoveToContainer(player.inventory.containerBelt))
-                {
                     if (!item.MoveToContainer(player.inventory.containerWear))
-                    {
                         item.Drop(player.transform.position, Vector3.up);
-                    }
-                }
-            }
-
             player.SendNetworkUpdate();
         }
 
         private string FormatTime(float seconds)
         {
             if (seconds >= 60f)
-            {
-                int mins = Mathf.FloorToInt(seconds / 60f);
-                return $"{mins} {(mins > 1 ? "minutes" : "minute")}";
-            }
-
-            return $"{seconds} seconds";
+                return $"{Mathf.FloorToInt(seconds / 60f)} minute{(seconds >= 120f ? "s" : "")}";
+            return $"{(int)seconds} seconds";
         }
     }
 }
